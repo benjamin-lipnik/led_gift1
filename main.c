@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
 #include "stm8s003.h"
 #include "uart.h"
 #include "stm8_utility.h"
@@ -19,11 +20,13 @@ const volatile uint8_t char_pos_lookup[10] = {4, 8, 5, 1, 3, 8, 8, 0, 6, 2};
 const int8_t sin_table[128] = {0,3,6,9,12,16,19,22,25,28,31,34,37,40,43,46,49,51,54,57,60,63,65,68,71,73,76,78,81,83,85,88,90,92,94,96,98,100,102,104,106,107,109,111,112,113,115,116,117,118,120,121,122,122,123,124,125,125,126,126,126,127,127,127,127,127,127,127,126,126,126,125,125,124,123,122,122,121,120,118,117,116,115,113,112,111,109,107,106,104,102,100,98,96,94,92,90,88,85,83,81,78,76,73,71,68,65,63,60,57,54,51,49,46,43,40,37,34,31,28,25,22,19,16,12,9,6,3};
 
 volatile uint8_t avtomatsko = 0;
+volatile uint8_t avtomatsko_preklop = 1;
 volatile uint8_t encoder_count = 8;
 volatile uint8_t enc_color_select = 0;
 volatile int8_t encoder_sub_count = 0;
 volatile uint8_t last_ab = 0;
 volatile uint32_t time_counter = 0;
+uint16_t global_loopt = 0;
 
 int8_t get_sin_val(uint8_t pos) {
   int8_t val = sin_table[pos & 0x7F];
@@ -32,7 +35,6 @@ int8_t get_sin_val(uint8_t pos) {
   return val;
 }
 
-
 //!!!! PWM !!!!
 //PORTD D
 #define RGB_R_PIN 2
@@ -40,8 +42,8 @@ int8_t get_sin_val(uint8_t pos) {
 #define RGB_B_PIN 4
 
 //PORTC
-#define SW_PIN1   4 //ENC_SW
-#define SW_PIN2   5
+#define SW_PIN1   4
+#define SW_PIN2   5 //ENC_SW
 #define ENC_PIN1  6
 #define ENC_PIN2  7
 #define CLOCK_PIN 3
@@ -49,61 +51,48 @@ int8_t get_sin_val(uint8_t pos) {
 //PORTA
 #define SYNC_DETECT_PIN 3
 
+#define ST_ANIMACIJ 7
+volatile uint8_t anim_select = 0;
+
+volatile uint8_t animt = 5;
+#define ANIMT_MIN 1
+#define ANIMT_MAX 30
+
 const volatile int8_t rotacijska_tabela[16] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
 
-uint8_t * hsv2rgb(uint8_t h, uint8_t s, uint8_t v)
-{
+uint8_t * odtenki(uint8_t pos) {
   static uint8_t m_rgb[3];
-  unsigned char region, remainder, p, q, t;
 
-  if (s == 0)
-  {
-      m_rgb[0] = v;
-      m_rgb[1] = v;
-      m_rgb[2] = v;
-      return m_rgb;
+  if(pos > 170) {
+    m_rgb[0] = (pos - 170) * 3;
+    m_rgb[1] = 0;
+    m_rgb[2] = 255 - m_rgb[0];
   }
-
-  region = h / 43;
-  remainder = (h - (region * 43)) * 6;
-
-  p = (v * (255 - s)) >> 8;
-  q = (v * (255 - ((s * remainder) >> 8))) >> 8;
-  t = (v * (255 - ((s * (255 - remainder)) >> 8))) >> 8;
-
-  switch (region)
-  {
-      case 0:
-          m_rgb[0] = v;
-          m_rgb[1] = t;
-          m_rgb[2] = p;
-          break;
-      case 1:
-          m_rgb[0] = q;
-          m_rgb[1] = v;
-          m_rgb[2] = p;
-          break;
-      case 2:
-          m_rgb[0] = p;
-          m_rgb[1] = v;
-          m_rgb[2] = t;
-          break;
-      case 3:
-          m_rgb[0] = p;
-          m_rgb[1] = q;
-          m_rgb[2] = v;
-          break;
-      case 4:
-          m_rgb[0] = t;
-          m_rgb[1] = p;
-          m_rgb[2] = v;
-          break;
-      default:
-          m_rgb[0] = v;
-          m_rgb[1] = p;
-          m_rgb[2] = q;
-          break;
+  else if(pos > 85) {
+    m_rgb[0] = 0;
+    m_rgb[2] = (pos - 85) * 3;
+    m_rgb[1] = 255 - m_rgb[2];
   }
+  else {
+    m_rgb[2] = 0;
+    m_rgb[1] = (pos) * 3;
+    m_rgb[0] = 255 - m_rgb[1];
+  }
+  return m_rgb;
+}
+uint8_t * regija_odtenka(uint8_t pos) {
+  static uint8_t m_rgb[3];
+
+  m_rgb[0] = 0;
+  m_rgb[1] = 0;
+  m_rgb[2] = 0;
+
+  if(pos >= 213 || pos < 43)
+    m_rgb[0] = 255;
+  else if(pos >= 43 &&  pos < 128)
+    m_rgb[1] = 255;
+  else
+    m_rgb[2] = 255;
   return m_rgb;
 }
 
@@ -146,36 +135,49 @@ void next_char_select() __interrupt(TIM4_ISR) {
 }
 
 void inputs_isr() __interrupt(EXTI2_ISR) {
-  if(avtomatsko)
-    return;
+
   //PC_IDR
   uint8_t ab = !(PC_IDR & _BV(ENC_PIN2)) << 1 | !(PC_IDR & _BV(ENC_PIN1));
   int8_t iz_tabele = rotacijska_tabela[last_ab << 2 | ab];
   encoder_sub_count += iz_tabele;
   last_ab = ab;
 
-  if(!(PC_IDR & _BV(SW_PIN2))) {
-    if(++enc_color_select >= 3)
-      enc_color_select = 0;
-      encoder_count = global_rgb[enc_color_select] / 8;
+  if(avtomatsko) {
+    if(!(PC_IDR & _BV(SW_PIN2))) {
+      avtomatsko_preklop = 1;
+      if(abs(encoder_sub_count) >= 4) {
+        if(iz_tabele < 0 && animt > ANIMT_MIN || iz_tabele > 0 && anim_select < (ANIMT_MAX-1))
+          animt += iz_tabele;
+        encoder_sub_count = 0;
+      }
+    }else {
+      if(abs(encoder_sub_count) >= 4) {
+        avtomatsko_preklop = 0;
+        if(iz_tabele < 0 && anim_select > 0 || iz_tabele > 0 && anim_select < (ST_ANIMACIJ-1))
+          anim_select += iz_tabele;
+        encoder_sub_count = 0;
+      }
+    }
   }
+  else {
+    if(!(PC_IDR & _BV(SW_PIN2))) {
+      if(++enc_color_select >= 3)
+        enc_color_select = 0;
+        encoder_count = global_rgb[enc_color_select] / 8;
+    }
 
-  if(abs(encoder_sub_count) >= 4) {
+    if(abs(encoder_sub_count) >= 4) {
 
-    if(encoder_count == 0 && iz_tabele < 0)
-      return;
-    if(encoder_count == 31 && iz_tabele > 0)
-      return;
+      if(encoder_count == 0 && iz_tabele < 0)
+        return;
+      if(encoder_count == 31 && iz_tabele > 0)
+        return;
 
-    encoder_count += iz_tabele;
-    encoder_sub_count = 0;
-    global_rgb[enc_color_select] = encoder_count * 8;
+      encoder_count += iz_tabele;
+      encoder_sub_count = 0;
+      global_rgb[enc_color_select] = encoder_count * 8;
+    }
   }
-
-  //CHECK ENCODER
-
-  //CHECK BUTTONS
-
 }
 
 void sync_detect_isr() __interrupt(EXTI0_ISR) {
@@ -252,7 +254,6 @@ void char_select_init() {
   PC_CR1 |= _BV(CLOCK_PIN);
 }
 
-
 void animacija1(uint8_t loopt) {
   loopt *= 4;
   for(uint8_t i = 0; i < 7; i++) {
@@ -270,7 +271,7 @@ void animacija1(uint8_t loopt) {
 }
 void animacija2(uint8_t loopt) {
   for(uint8_t i = 0; i < 7; i++) {
-    uint8_t * rgb = hsv2rgb(loopt - i * 30, 255,255);
+    uint8_t * rgb = odtenki(loopt - i * 30);
     frame_buffer[i][0] = rgb[0];
     frame_buffer[i][1] = rgb[1];
     frame_buffer[i][2] = rgb[2];
@@ -289,7 +290,7 @@ void animacija3(uint8_t loopt) {
       frame_buffer[i][2] = 0;
     }
     else {
-      uint8_t * rgb = hsv2rgb(pos * 40, 255, 255);
+      uint8_t * rgb = odtenki(pos * 40);
       frame_buffer[i][0] = rgb[0];
       frame_buffer[i][1] = rgb[1];
       frame_buffer[i][2] = rgb[2];
@@ -307,7 +308,7 @@ void animacija4(uint8_t loopt) {
 }
 void animacija5(uint8_t loopt) {
   for(uint8_t i = 0; i < 7; i++) {
-    uint8_t * rgb = hsv2rgb(loopt, 255,128);
+    uint8_t * rgb = odtenki(loopt);
 
     if(i < 5) {
       frame_buffer[i][0] = 128+get_sin_val(loopt);
@@ -321,9 +322,83 @@ void animacija5(uint8_t loopt) {
     }
   }
 }
+void animacija6(uint8_t loopt) {
+  //loopt = global_loopt / 4;
+  if(loopt % 28)
+    return;
 
-uint8_t anim_select = 0;
-void (* animacije[])(uint8_t) = {animacija1, animacija2, animacija3, animacija4, animacija5};
+  uint8_t * rgb_1 = regija_odtenka(loopt);
+  memcpy(frame_buffer[2], rgb_1, 3);
+
+  uint8_t * rgb_2 = regija_odtenka(loopt - 28);
+  memcpy(frame_buffer[1], rgb_2, 3);
+  memcpy(frame_buffer[3], rgb_2, 3);
+  memcpy(frame_buffer[5], rgb_2, 3);
+  memcpy(frame_buffer[6], rgb_2, 3);
+
+  uint8_t * rgb_3 = regija_odtenka(loopt - 56);
+  memcpy(frame_buffer[0], rgb_3, 3);
+  memcpy(frame_buffer[4], rgb_3, 3);
+}
+void animacija7(uint8_t loopt) {
+  for(uint8_t i = 0; i < 7; i++) {
+    memcpy(frame_buffer[i], rgb_off, 3);
+  }
+
+  loopt *= 2;
+  uint8_t korak = loopt / 32;
+
+  switch (korak) {
+    case 0:
+      frame_buffer[0][0] = 200;
+      frame_buffer[1][0] = 20;
+      frame_buffer[5][0] = 200;
+    break;
+    case 1:
+      frame_buffer[1][0] = 200;
+      frame_buffer[0][0] = 20;
+      frame_buffer[5][0] = 200;
+    break;
+    case 2:
+      frame_buffer[2][0] = 200;
+      frame_buffer[1][0] = 20;
+      frame_buffer[0][0] = 2;
+      frame_buffer[6][0] = 200;
+    break;
+    case 3:
+      frame_buffer[3][0] = 200;
+      frame_buffer[2][0] = 20;
+      frame_buffer[1][0] = 2;
+      frame_buffer[6][0] = 200;
+    break;
+    case 4:
+      frame_buffer[4][0] = 200;
+      frame_buffer[3][0] = 20;
+      frame_buffer[2][0] = 2;
+      frame_buffer[6][0] = 200;
+    break;
+    case 5:
+      frame_buffer[3][0] = 200;
+      frame_buffer[4][0] = 20;
+      frame_buffer[6][0] = 200;
+    break;
+    case 6:
+      frame_buffer[2][0] = 200;
+      frame_buffer[3][0] = 20;
+      frame_buffer[4][0] = 2;
+      frame_buffer[5][0] = 200;
+    break;
+    case 7:
+      frame_buffer[1][0] = 200;
+      frame_buffer[2][0] = 20;
+      frame_buffer[3][0] = 2;
+      frame_buffer[5][0] = 200;
+    break;
+  }
+}
+
+
+void (* animacije[])(uint8_t) = {animacija7, animacija1, animacija2, animacija3, animacija4, animacija5, animacija6};
 
 int main () {
     CLK_CKDIVR = 0;//16mhz
@@ -337,21 +412,21 @@ int main () {
 
 
     //Main loop
-    uint16_t loopt = 0;
     while(1) {
       //racunaj funkcijo -> izbira med rocno in avtomatiko
       //printf("enc: %u, time: %lu\n\r", encoder_count, time_counter);
-      util_delay_milliseconds(5);
-      loopt++;
+      util_delay_milliseconds(animt);
 
-      if(loopt > 1000) {
-        loopt = 0;
-        if(++anim_select >= 5)
-          anim_select = 0;
+      if(++global_loopt >= 1000) {
+        global_loopt = 0;
+        if(avtomatsko_preklop)
+          if(++anim_select >= ST_ANIMACIJ) {
+            anim_select = 0;
+          }
       }
       avtomatsko = !(PC_IDR & _BV(SW_PIN1));
       if(avtomatsko) // AUTO
-        animacije[anim_select](loopt);
+        animacije[anim_select](global_loopt);
       else {
         for(uint8_t i = 0; i < 7; i++) {
           frame_buffer[i][0] = global_rgb[0];
