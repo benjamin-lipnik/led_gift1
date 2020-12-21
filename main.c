@@ -7,34 +7,6 @@
 #include "uart.h"
 #include "stm8_utility.h"
 
-//volatile uint8_t auto = 0;
-volatile uint8_t char_select_index = 0;
-//volatile uint8_t global_rgb[3] = {0,128,255};
-volatile const uint8_t rgb_off[3] = {0,0,0};
-volatile uint8_t frame_buffer[10][3];
-volatile uint8_t frame_buffer_preloaded[10][3];
-volatile uint8_t global_rgb[3] = {127, 0 ,0};
-
-const volatile uint8_t char_pos_lookup[10] = {4, 8, 5, 1, 3, 8, 8, 0, 6, 2};
-
-const int8_t sin_table[128] = {0,3,6,9,12,16,19,22,25,28,31,34,37,40,43,46,49,51,54,57,60,63,65,68,71,73,76,78,81,83,85,88,90,92,94,96,98,100,102,104,106,107,109,111,112,113,115,116,117,118,120,121,122,122,123,124,125,125,126,126,126,127,127,127,127,127,127,127,126,126,126,125,125,124,123,122,122,121,120,118,117,116,115,113,112,111,109,107,106,104,102,100,98,96,94,92,90,88,85,83,81,78,76,73,71,68,65,63,60,57,54,51,49,46,43,40,37,34,31,28,25,22,19,16,12,9,6,3};
-
-volatile uint8_t avtomatsko = 0;
-volatile uint8_t avtomatsko_preklop = 1;
-volatile uint8_t encoder_count = 8;
-volatile uint8_t enc_color_select = 0;
-volatile int8_t encoder_sub_count = 0;
-volatile uint8_t last_ab = 0;
-volatile uint32_t time_counter = 0;
-uint16_t global_loopt = 0;
-
-int8_t get_sin_val(uint8_t pos) {
-  int8_t val = sin_table[pos & 0x7F];
-  if(pos & _BV(7))
-    return -val;
-  return val;
-}
-
 //!!!! PWM !!!!
 //PORTD D
 #define RGB_R_PIN 2
@@ -51,14 +23,53 @@ int8_t get_sin_val(uint8_t pos) {
 //PORTA
 #define SYNC_DETECT_PIN 3
 
+//Defines
 #define ST_ANIMACIJ 7
-volatile uint8_t anim_select = 0;
-
-volatile uint8_t animt = 5;
 #define ANIMT_MIN 1
 #define ANIMT_MAX 30
 
+const int8_t sin_table[128] = {0,3,6,9,12,16,19,22,25,28,31,34,37,40,43,46,49,51,54,57,60,63,65,68,71,73,76,78,81,83,85,88,90,92,94,96,98,100,102,104,106,107,109,111,112,113,115,116,117,118,120,121,122,122,123,124,125,125,126,126,126,127,127,127,127,127,127,127,126,126,126,125,125,124,123,122,122,121,120,118,117,116,115,113,112,111,109,107,106,104,102,100,98,96,94,92,90,88,85,83,81,78,76,73,71,68,65,63,60,57,54,51,49,46,43,40,37,34,31,28,25,22,19,16,12,9,6,3};
 const volatile int8_t rotacijska_tabela[16] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
+volatile const uint8_t char_pos_lookup[10] = {4, 8, 5, 1, 3, 8, 8, 0, 6, 2};
+volatile const uint8_t rgb_off[3] = {0,0,0};
+
+volatile uint8_t char_select_index = 0;
+volatile uint8_t frame_buffer[10][3];
+volatile uint8_t frame_buffer_preloaded[10][3];
+volatile uint8_t global_rgb[3] = {127, 0 ,0};
+
+volatile uint8_t avtomatsko = 0;
+volatile uint8_t avtomatsko_preklop = 1;
+
+volatile uint8_t enc_color_select = 0;
+volatile uint8_t encoder_count = 8;
+
+volatile int8_t encoder_sub_count = 0;
+volatile uint8_t last_ab = 0;
+
+volatile uint32_t time_counter = 0;
+uint16_t global_loopt = 0;
+
+volatile uint8_t anim_select = 0;
+volatile uint8_t animt = 5;
+
+//Fore debounce purposes
+//bit 7 stores if switch is active or not (active high)
+//bits 6:0 store debounce time
+volatile uint8_t sw2_active_or_block = 0;
+volatile uint8_t nacin_odtenki = 0;
+
+int putchar(int c) {
+    uart_write(c);
+    return 0;
+}
+
+int8_t get_sin_val(uint8_t pos) {
+  int8_t val = sin_table[pos & 0x7F];
+  if(pos & _BV(7))
+    return -val;
+  return val;
+}
 
 uint8_t * odtenki(uint8_t pos) {
   static uint8_t m_rgb[3];
@@ -96,11 +107,6 @@ uint8_t * regija_odtenka(uint8_t pos) {
   return m_rgb;
 }
 
-int putchar(int c) {
-    uart_write(c);
-    return 0;
-}
-
 void set_rgb (uint8_t * rgb) {
   TIM2_CCR1H = 0;
   TIM2_CCR1L = 255-rgb[2];
@@ -135,15 +141,20 @@ void next_char_select() __interrupt(TIM4_ISR) {
 }
 
 void inputs_isr() __interrupt(EXTI2_ISR) {
-
   //PC_IDR
   uint8_t ab = !(PC_IDR & _BV(ENC_PIN2)) << 1 | !(PC_IDR & _BV(ENC_PIN1));
   int8_t iz_tabele = rotacijska_tabela[last_ab << 2 | ab];
   encoder_sub_count += iz_tabele;
   last_ab = ab;
 
+  //gledanje gumba 2
+  if(!sw2_active_or_block) {
+    if(!(PC_IDR & _BV(SW_PIN2)))
+      sw2_active_or_block = 50;
+  }
+
   if(avtomatsko) {
-    if(!(PC_IDR & _BV(SW_PIN2))) {
+    if(sw2_active_or_block) {
       avtomatsko_preklop = 1;
       if(abs(encoder_sub_count) >= 4) {
         if(iz_tabele < 0 && animt > ANIMT_MIN || iz_tabele > 0 && anim_select < (ANIMT_MAX-1))
@@ -160,22 +171,38 @@ void inputs_isr() __interrupt(EXTI2_ISR) {
     }
   }
   else {
-    if(!(PC_IDR & _BV(SW_PIN2))) {
-      if(++enc_color_select >= 3)
-        enc_color_select = 0;
+    uint8_t enc_sensitivity = 4;
+
+    if(sw2_active_or_block) {
+      if(!nacin_odtenki) {
+        enc_sensitivity = 16;
+        if(++enc_color_select >= 3)
+          enc_color_select = 0;
         encoder_count = global_rgb[enc_color_select] / 8;
+      }
+      if(abs(encoder_sub_count) >= enc_sensitivity) {
+        encoder_count += iz_tabele;
+        encoder_sub_count = 0;
+        uint8_t * rgb = odtenki(encoder_count * 4);
+        memcpy(global_rgb, rgb, 3);
+        nacin_odtenki = 1;
+        enc_color_select = 0;
+      }
     }
+    else {
+      if(abs(encoder_sub_count) >= 4) {
+        if(encoder_count > 31)
+          encoder_count = 31;
+        if(encoder_count == 0 && iz_tabele < 0)
+          return;
+        if(encoder_count == 31 && iz_tabele > 0)
+          return;
 
-    if(abs(encoder_sub_count) >= 4) {
-
-      if(encoder_count == 0 && iz_tabele < 0)
-        return;
-      if(encoder_count == 31 && iz_tabele > 0)
-        return;
-
-      encoder_count += iz_tabele;
-      encoder_sub_count = 0;
-      global_rgb[enc_color_select] = encoder_count * 8;
+        encoder_count += iz_tabele;
+        encoder_sub_count = 0;
+        nacin_odtenki = 0;
+        global_rgb[enc_color_select] = encoder_count * 8;
+      }
     }
   }
 }
@@ -397,7 +424,6 @@ void animacija7(uint8_t loopt) {
   }
 }
 
-
 void (* animacije[])(uint8_t) = {animacija7, animacija1, animacija2, animacija3, animacija4, animacija5, animacija6};
 
 int main () {
@@ -415,7 +441,12 @@ int main () {
     while(1) {
       //racunaj funkcijo -> izbira med rocno in avtomatiko
       //printf("enc: %u, time: %lu\n\r", encoder_count, time_counter);
-      util_delay_milliseconds(animt);
+      for(uint8_t i = 0; i < animt; i++) {
+        util_delay_milliseconds(1);
+        if(sw2_active_or_block) {
+          sw2_active_or_block--;
+        }
+      }
 
       if(++global_loopt >= 1000) {
         global_loopt = 0;
