@@ -31,6 +31,7 @@
 const int8_t sin_table[128] = {0,3,6,9,12,16,19,22,25,28,31,34,37,40,43,46,49,51,54,57,60,63,65,68,71,73,76,78,81,83,85,88,90,92,94,96,98,100,102,104,106,107,109,111,112,113,115,116,117,118,120,121,122,122,123,124,125,125,126,126,126,127,127,127,127,127,127,127,126,126,126,125,125,124,123,122,122,121,120,118,117,116,115,113,112,111,109,107,106,104,102,100,98,96,94,92,90,88,85,83,81,78,76,73,71,68,65,63,60,57,54,51,49,46,43,40,37,34,31,28,25,22,19,16,12,9,6,3};
 const volatile int8_t rotacijska_tabela[16] = {0,1,-1,0,-1,0,0,1,1,0,0,-1,0,-1,1,0};
 volatile const uint8_t char_pos_lookup[10] = {4, 8, 5, 1, 3, 8, 8, 0, 6, 2};
+volatile const uint8_t char_pos_circular[7] = {0,1,2,3,4,6,5};
 volatile const uint8_t rgb_off[3] = {0,0,0};
 
 volatile uint8_t char_select_index = 0;
@@ -73,21 +74,35 @@ int8_t get_sin_val(uint8_t pos) {
 
 uint8_t * odtenki(uint8_t pos) {
   static uint8_t m_rgb[3];
-
-  if(pos > 170) {
-    m_rgb[0] = (pos - 170) * 3;
+  if(pos >= 213) { // 213 -> 255, (43,42,43,43,42,43)
+    m_rgb[0] = 255;
     m_rgb[1] = 0;
-    m_rgb[2] = 255 - m_rgb[0];
+    m_rgb[2] = 6 * (255 - pos);
   }
-  else if(pos > 85) {
+  else if(pos >= 171) { //171 -> 212
+    m_rgb[0] = 6 * (pos - 170);
+    m_rgb[1] = 0;
+    m_rgb[2] = 255;
+  }
+  else if(pos >= 128) { //128 -> 170
     m_rgb[0] = 0;
-    m_rgb[2] = (pos - 85) * 3;
-    m_rgb[1] = 255 - m_rgb[2];
+    m_rgb[1] = 6 * (170 - pos);
+    m_rgb[2] = 255;
   }
-  else {
+  else if(pos >= 85) { //85 -> 127
+    m_rgb[0] = 0;
+    m_rgb[1] = 255;
+    m_rgb[2] = 6 * (pos-85);
+  }
+  else if(pos >= 43) { //43 -> 84
+    m_rgb[0] = 6 * (85 - pos);
+    m_rgb[1] = 255;
     m_rgb[2] = 0;
-    m_rgb[1] = (pos) * 3;
-    m_rgb[0] = 255 - m_rgb[1];
+  }
+  else { // 0 -> 42
+    m_rgb[0] = 255;
+    m_rgb[1] = 6 * pos;
+    m_rgb[2] = 0;
   }
   return m_rgb;
 }
@@ -150,17 +165,19 @@ void inputs_isr() __interrupt(EXTI2_ISR) {
   //gledanje gumba 2
   if(!sw2_active_or_block) {
     if(!(PC_IDR & _BV(SW_PIN2)))
-      sw2_active_or_block = 50;
+      sw2_active_or_block = 100;
   }
 
   if(avtomatsko) {
     if(sw2_active_or_block) {
-      avtomatsko_preklop = 1;
       if(abs(encoder_sub_count) >= 4) {
         if(iz_tabele < 0 && animt > ANIMT_MIN || iz_tabele > 0 && anim_select < (ANIMT_MAX-1))
           animt += iz_tabele;
         encoder_sub_count = 0;
+        avtomatsko_preklop = 0;
       }
+      else
+        avtomatsko_preklop = 1;
     }else {
       if(abs(encoder_sub_count) >= 4) {
         avtomatsko_preklop = 0;
@@ -298,10 +315,10 @@ void animacija1(uint8_t loopt) {
 }
 void animacija2(uint8_t loopt) {
   for(uint8_t i = 0; i < 7; i++) {
-    uint8_t * rgb = odtenki(loopt - i * 30);
-    frame_buffer[i][0] = rgb[0];
-    frame_buffer[i][1] = rgb[1];
-    frame_buffer[i][2] = rgb[2];
+    uint8_t * rgb = odtenki(loopt - i * 20);
+    frame_buffer[char_pos_circular[i]][0] = rgb[0];
+    frame_buffer[char_pos_circular[i]][1] = rgb[1];
+    frame_buffer[char_pos_circular[i]][2] = rgb[2];
   }
 }
 void animacija3(uint8_t loopt) {
@@ -424,7 +441,7 @@ void animacija7(uint8_t loopt) {
   }
 }
 
-void (* animacije[])(uint8_t) = {animacija7, animacija1, animacija2, animacija3, animacija4, animacija5, animacija6};
+void (* animacije[])(uint8_t) = {animacija1, animacija2, animacija3, animacija4, animacija5, animacija6, animacija7};
 
 int main () {
     CLK_CKDIVR = 0;//16mhz
